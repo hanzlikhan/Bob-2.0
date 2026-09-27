@@ -106,58 +106,88 @@ function PipelineInner() {
     const body = githubUrl ? { githubUrl } : uploadId ? { uploadId } : { projectName: project };
     const ctrl = new AbortController();
 
-    fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    }).then((res) => {
-      const reader  = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
+    const MAX_RETRIES = 3;
+    let retryCount = 0;
 
-      function pump() {
-        reader.read().then(({ done, value }) => {
-          if (done || cancelled) return;
-          buf += decoder.decode(value, { stream: true });
-          const parts = buf.split("\n\n");
-          buf = parts.pop();
+    function startStream() {
+      fetch("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      }).then((res) => {
+        if (!res.ok) {
+          return res.json().then((err) => {
+            setErrorMsg(err.error || `Server error: ${res.status}`);
+            addMsg(`Error: ${err.error || res.statusText}`, "error");
+          });
+        }
 
-          for (const part of parts) {
-            const evLine   = part.match(/^event:\s*(.+)$/m);
-            const dataLine = part.match(/^data:\s*(.+)$/ms);
-            if (!evLine || !dataLine) continue;
-            let data;
-            try { data = JSON.parse(dataLine[1]); } catch { continue; }
+        const reader  = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
 
-            const ev = evLine[1].trim();
-            if (ev === "step") {
-              const { step, status, attempt: att, payload, message } = data;
-              updStep(step, { status, attempt: att ?? 1, payload: payload ?? null });
-              if (att && att > 1) setAttempt(att);
-              const msg  = message || `[${step}] ${status}${att > 1 ? ` (attempt ${att})` : ""}`;
-              const type = status === "done" ? "success" : status === "failed" ? "error" : status === "retry" ? "warn" : "info";
-              addMsg(msg, type);
-            } else if (ev === "done") {
-              setResult(data);
-              addMsg(
-                data.success
-                  ? `✓ Pipeline complete — fixed in ${(data.totalMs / 1000).toFixed(1)}s!`
-                  : "✗ Max retries reached without a passing test suite.",
-                data.success ? "success" : "error"
-              );
-            } else if (ev === "error") {
-              setErrorMsg(data.message);
-              addMsg(`Error: ${data.message}`, "error");
+        function pump() {
+          reader.read().then(({ done, value }) => {
+            if (done || cancelled) return;
+            buf += decoder.decode(value, { stream: true });
+            const parts = buf.split("\n\n");
+            buf = parts.pop();
+
+            for (const part of parts) {
+              const evLine   = part.match(/^event:\s*(.+)$/m);
+              const dataLine = part.match(/^data:\s*(.+)$/ms);
+              if (!evLine || !dataLine) continue;
+              let data;
+              try { data = JSON.parse(dataLine[1]); } catch { continue; }
+
+              const ev = evLine[1].trim();
+
+              // Silently ignore heartbeat events (keep-alive pings)
+              if (ev === "heartbeat") continue;
+
+              if (ev === "step") {
+                const { step, status, attempt: att, payload, message } = data;
+                updStep(step, { status, attempt: att ?? 1, payload: payload ?? null });
+                if (att && att > 1) setAttempt(att);
+                const msg  = message || `[${step}] ${status}${att > 1 ? ` (attempt ${att})` : ""}`;
+                const type = status === "done" ? "success" : status === "failed" ? "error" : status === "retry" ? "warn" : "info";
+                addMsg(msg, type);
+              } else if (ev === "done") {
+                setResult(data);
+                addMsg(
+                  data.success
+                    ? `✓ Pipeline complete — fixed in ${(data.totalMs / 1000).toFixed(1)}s!`
+                    : "✗ Max retries reached without a passing test suite.",
+                  data.success ? "success" : "error"
+                );
+              } else if (ev === "error") {
+                setErrorMsg(data.message);
+                addMsg(`Error: ${data.message}`, "error");
+              }
             }
-          }
-          pump();
-        }).catch(() => {});
-      }
-      pump();
-    }).catch((e) => {
-      if (!cancelled) setErrorMsg(String(e));
-    });
+            pump();
+          }).catch(() => {});
+        }
+        pump();
+      }).catch((e) => {
+        if (cancelled) return;
+        // Retry with exponential backoff on network failure
+        if (retryCount < MAX_RETRIES && !ctrl.signal.aborted) {
+          retryCount++;
+          const delayMs = Math.min(1000 * Math.pow(2, retryCount - 1), 8000);
+          addMsg(`Network error, retrying in ${delayMs / 1000}s… (attempt ${retryCount}/${MAX_RETRIES})`, "warn");
+          setTimeout(() => {
+            if (!cancelled) startStream();
+          }, delayMs);
+        } else {
+          setErrorMsg(String(e));
+          addMsg(`Error: ${e}`, "error");
+        }
+      });
+    }
+
+    startStream();
 
     return () => {
       cancelled = true;

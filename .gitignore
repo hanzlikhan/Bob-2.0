@@ -23,6 +23,10 @@
 # misc
 .DS_Store
 *.pem
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
 
 # debug
 npm-debug.log*
@@ -30,18 +34,22 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# Environment and Secrets
+.env
+.env.local
+.env*.local
+.env.production
+.env.development
 
-# vercel
+# vercel & temporary
 .vercel
+scratch/
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
 
-.env.local
-
-# Never commit sample project deps
+# Never commit sample project deps or dynamically cloned projects
 sample-projects/**/node_modules
 sample-projects/**/package-lock.json
+sample-projects/clone-*

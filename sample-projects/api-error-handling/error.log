@@ -1,0 +1,3 @@
+TypeError: Cannot read properties of undefined (reading 'id')
+    at formatUserProfile (userHandler.js:8:29)
+    at test.js:18:18

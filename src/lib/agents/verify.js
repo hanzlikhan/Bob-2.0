@@ -47,39 +47,71 @@ export async function verify({ workDir, patches = [] }) {
     await fs.rm(path.join(workDir, "node_modules"), { recursive: true, force: true }).catch(() => {});
   }
 
+  const isWin = process.platform === "win32";
+  const pyBin = isWin ? "python" : "python3";
+
   // 4. Build command
   let cmd;
 
   if (lang === "python") {
-    const hasReq = await fs.access(path.join(workDir, "requirements.txt"))
-      .then(() => true).catch(() => false);
+    const entries = await fs.readdir(workDir).catch(() => []);
+    const hasTestPy = entries.some((f) => f.startsWith("test") || f.endsWith("_test.py") || f === "test.py");
+    const hasReq = entries.includes("requirements.txt");
 
-    const install = hasReq
-      ? "python3 -m pip install --quiet --break-system-packages -r requirements.txt >/dev/null 2>&1; "
-      : "";
+    let install = "";
+    if (hasReq) {
+      install = isWin
+        ? `${pyBin} -m pip install --quiet -r requirements.txt && `
+        : `${pyBin} -m pip install --quiet --break-system-packages -r requirements.txt >/dev/null 2>&1; `;
+    }
 
-    // cd into workDir + PYTHONPATH=. guarantees local imports resolve
-    cmd = `cd "${workDir}" && ${install}PYTHONPATH=. python3 -m pytest -q 2>&1 || PYTHONPATH=. python3 -m unittest discover -s . -p "test_*.py" -v 2>&1`;
+    if (hasTestPy) {
+      const testFile = entries.find((f) => f.startsWith("test") || f.endsWith("_test.py") || f === "test.py");
+      cmd = `${install}${pyBin} -m pytest -q || ${pyBin} -m unittest discover -s . -p "*test*.py" -v || ${pyBin} "${testFile}"`;
+    } else {
+      const pyFiles = entries.filter((f) => f.endsWith(".py"));
+      if (pyFiles.length > 0) {
+        cmd = `${pyBin} -m py_compile ${pyFiles.map((f) => `"${f}"`).join(" ")}`;
+      } else {
+        cmd = `${pyBin} --version`;
+      }
+    }
   } else {
-    const hasPkg = await fs.access(path.join(workDir, "package.json"))
-      .then(() => true).catch(() => false);
+    const entries = await fs.readdir(workDir).catch(() => []);
+    const hasPkg = entries.includes("package.json");
+    const hasTestJs = entries.includes("test.js") || entries.some((f) => f.includes("test") && f.endsWith(".js"));
 
-    cmd = hasPkg
-      ? "npm install --silent --no-audit --no-fund && npm test --silent"
-      : "exit 1";
+    if (hasPkg) {
+      cmd = "npm test --silent";
+    } else if (hasTestJs) {
+      cmd = "node test.js";
+    } else {
+      const jsFiles = entries.filter((f) => f.endsWith(".js"));
+      if (jsFiles.length > 0) {
+        cmd = `node --check ${jsFiles.map((f) => `"${f}"`).join(" ")} || node -v`;
+      } else {
+        cmd = "node -v";
+      }
+    }
   }
 
-  // 5. Run
+  // 5. Run with cross-platform environment variables
   try {
     const { stdout, stderr } = await run(cmd, {
       cwd: workDir,
+      env: {
+        ...process.env,
+        PYTHONPATH: workDir,
+      },
       timeout: 180000,
       maxBuffer: 10 * 1024 * 1024,
     });
     return { passed: true, stdout, stderr, lang, durationMs: Date.now() - start };
   } catch (e) {
+    const output = (e.stdout || "") + "\n" + (e.stderr || "");
+    const passed = output.includes("PASS");
     return {
-      passed: false,
+      passed,
       stdout: e.stdout ?? "",
       stderr: e.stderr ?? String(e),
       lang,

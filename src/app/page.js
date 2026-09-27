@@ -17,15 +17,20 @@ export default function Landing() {
     fetch("/api/projects")
       .then((r) => r.json())
       .then((d) => {
-        setProjects(d.projects || []);
-        if (d.projects?.length) setSelected(d.projects[0]);
+        const raw = d.projects || [];
+        setProjects(raw);
+        if (raw.length) {
+          const first = typeof raw[0] === "object" ? raw[0].name : raw[0];
+          setSelected(first);
+        }
       })
       .catch(() => {});
   }, []);
 
   const runPick = () => {
     if (!selected) return;
-    router.push(`/pipeline?project=${encodeURIComponent(selected)}`);
+    const name = typeof selected === "object" ? selected.name : selected;
+    router.push(`/pipeline?project=${encodeURIComponent(name)}`);
   };
 
   const runClone = async () => {
@@ -247,7 +252,15 @@ export default function Landing() {
                   }}
                 >
                   {projects.length === 0 && <option>(no projects found)</option>}
-                  {projects.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {projects.map((p, idx) => {
+                    const name = typeof p === "object" ? p.name : p;
+                    const lang = typeof p === "object" && p.language ? ` (${p.language})` : "";
+                    return (
+                      <option key={name || idx} value={name}>
+                        {name}{lang}
+                      </option>
+                    );
+                  })}
                 </select>
                 <button
                   disabled={!selected || busy}

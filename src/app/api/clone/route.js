@@ -1,4 +1,4 @@
-import { cloneRepo } from "@/lib/cloneRepo";
+import { cloneRepo, normalizeGithubUrl } from "@/lib/cloneRepo";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -9,19 +9,20 @@ export async function POST(req) {
   try {
     const { repoUrl } = await req.json();
 
-    if (!repoUrl || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/?$/.test(repoUrl)) {
-      return Response.json({ error: "Only public github.com URLs are supported" }, { status: 400 });
+    const normalizedUrl = normalizeGithubUrl(repoUrl);
+    if (!normalizedUrl) {
+      return Response.json({ error: "Only public github.com URLs are supported (e.g. https://github.com/owner/repository)" }, { status: 400 });
     }
 
     if (process.env.VERCEL) {
       return Response.json({ error: "Cloning is disabled on Vercel (no writable filesystem)" }, { status: 400 });
     }
 
-    const repoName = repoUrl.replace(/\/$/, "").split("/").pop().replace(/\.git$/, "");
+    const repoName = normalizedUrl.split("/").pop();
     const safeName = `clone-${repoName}-${Date.now()}`;
     const target   = path.join(process.cwd(), "sample-projects", safeName);
 
-    await cloneRepo(repoUrl, target);
+    await cloneRepo(normalizedUrl, target);
 
     // Capture initial test failure for the pipeline's error.log
     let errLog = "(no test failures captured)";
@@ -33,11 +34,12 @@ export async function POST(req) {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const run = promisify(exec);
+        const pyBin = process.platform === "win32" ? "python" : "python3";
         const cmd = hasPkg
-          ? "npm install --silent --no-audit --no-fund && npm test"
-          : "pip install -q -r requirements.txt && python3 -m pytest -q";
+          ? "npm test --silent"
+          : `${pyBin} -m pytest -q`;
         try {
-          await run(cmd, { cwd: target, timeout: 90000 });
+          await run(cmd, { cwd: target, timeout: 60000 });
         } catch (e) {
           errLog = `${e.stdout || ""}\n${e.stderr || ""}` || "(empty)";
         }
