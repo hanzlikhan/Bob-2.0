@@ -176,8 +176,14 @@ export async function POST(req) {
         cleanupTmp = true;
       } else {
         const projectsRoot = path.join(process.cwd(), "sample-projects");
-        workDir = path.join(projectsRoot, projectName);
-        if (!workDir.startsWith(projectsRoot)) throw new Error("invalid projectName");
+        const sourceDir = path.join(projectsRoot, projectName);
+        if (!sourceDir.startsWith(projectsRoot)) throw new Error("invalid projectName");
+
+        // Copy sample project to writable temp directory (required for Vercel / Serverless EROFS protection)
+        const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), `bob-sample-${projectName}-`));
+        await fs.cp(sourceDir, tmpDir, { recursive: true });
+        workDir = tmpDir;
+        cleanupTmp = true;
       }
 
       const label = githubUrl
